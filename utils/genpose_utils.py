@@ -4,29 +4,39 @@ import numpy as np
 
 from ipdb import set_trace
 
+
 def encode_axes(axes: torch.Tensor, dim: int) -> torch.Tensor:
-    ''' axes: Bx... '''
+    """axes: Bx..."""
     bs = axes.shape[0]
     axes = axes.reshape(bs, -1, 1)
     embedding = []
-    exponent = (2 ** torch.arange(dim, device=axes.device, dtype=torch.float32)).reshape(1, 1, -1)
+    exponent = (
+        2 ** torch.arange(dim, device=axes.device, dtype=torch.float32)
+    ).reshape(1, 1, -1)
     for fn in [torch.sin, torch.cos]:
         embedding.append(fn(exponent * axes).reshape(bs, -1))
     return torch.concat(embedding, dim=-1)
 
+
 def get_pose_dim(rot_mode):
-    assert rot_mode in ['quat_wxyz', 'quat_xyzw', 'euler_xyz', 'euler_xyz_sx_cx', 'rot_matrix'], \
-        f"the rotation mode {rot_mode} is not supported!"
-        
-    if rot_mode == 'quat_wxyz' or rot_mode == 'quat_xyzw':
+    assert rot_mode in [
+        "quat_wxyz",
+        "quat_xyzw",
+        "euler_xyz",
+        "euler_xyz_sx_cx",
+        "rot_matrix",
+    ], f"the rotation mode {rot_mode} is not supported!"
+
+    if rot_mode == "quat_wxyz" or rot_mode == "quat_xyzw":
         pose_dim = 7
-    elif rot_mode == 'euler_xyz':
+    elif rot_mode == "euler_xyz":
         pose_dim = 6
-    elif rot_mode == 'euler_xyz_sx_cx' or rot_mode == 'rot_matrix':
+    elif rot_mode == "euler_xyz_sx_cx" or rot_mode == "rot_matrix":
         pose_dim = 9
     else:
         raise NotImplementedError
     return pose_dim
+
 
 '''
 def rot6d_to_mat_batch(d6):
@@ -53,6 +63,7 @@ def rot6d_to_mat_batch(d6):
     return torch.stack((x, y, z), dim=-1)  # (b,3,3)
 '''
 
+
 def rot6d_to_mat_batch(d6):
     """
     Converts 6D rotation representation by Zhou et al. [1] to rotation matrix.
@@ -69,16 +80,16 @@ def rot6d_to_mat_batch(d6):
     y_raw = d6[..., 3:6]  # bx3
 
     x = x_raw / np.linalg.norm(x_raw, axis=-1, keepdims=True)  # b*3
-    z = np.cross(x, y_raw) # b*3
-    z = z / np.linalg.norm(z, axis=-1, keepdims=True)          # b*3
-    y = np.cross(z, x)     # b*3                      
+    z = np.cross(x, y_raw)  # b*3
+    z = z / np.linalg.norm(z, axis=-1, keepdims=True)  # b*3
+    y = np.cross(z, x)  # b*3
 
     return np.stack((x, y, z), axis=-1)  # (b,3,3)
 
 
 class TrainClock(object):
-    """ Clock object to track epoch and step during training
-    """
+    """Clock object to track epoch and step during training"""
+
     def __init__(self):
         self.epoch = 1
         self.minibatch = 0
@@ -93,16 +104,12 @@ class TrainClock(object):
         self.minibatch = 0
 
     def make_checkpoint(self):
-        return {
-            'epoch': self.epoch,
-            'minibatch': self.minibatch,
-            'step': self.step
-        }
+        return {"epoch": self.epoch, "minibatch": self.minibatch, "step": self.step}
 
     def restore_checkpoint(self, clock_dict):
-        self.epoch = clock_dict['epoch']
-        self.minibatch = clock_dict['minibatch']
-        self.step = clock_dict['step']
+        self.epoch = clock_dict["epoch"]
+        self.minibatch = clock_dict["minibatch"]
+        self.step = clock_dict["step"]
 
 
 def merge_results(results_ori, results_new):
@@ -110,12 +117,17 @@ def merge_results(results_ori, results_new):
         return results_new
     else:
         results = {
-            'pred_pose': torch.cat([results_ori['pred_pose'], results_new['pred_pose']], dim=0),
-            'gt_pose': torch.cat([results_ori['gt_pose'], results_new['gt_pose']], dim=0),
-            'cls_id': torch.cat([results_ori['cls_id'], results_new['cls_id']], dim=0),
-            'handle_visibility': torch.cat([results_ori['handle_visibility'], results_new['handle_visibility']], dim=0),
+            "pred_pose": torch.cat(
+                [results_ori["pred_pose"], results_new["pred_pose"]], dim=0
+            ),
+            "gt_pose": torch.cat(
+                [results_ori["gt_pose"], results_new["gt_pose"]], dim=0
+            ),
+            "cls_id": torch.cat([results_ori["cls_id"], results_new["cls_id"]], dim=0),
+            "handle_visibility": torch.cat(
+                [results_ori["handle_visibility"], results_new["handle_visibility"]],
+                dim=0,
+            ),
             # 'path': results_ori['path'] + results_new['path'],
         }
         return results
-
-

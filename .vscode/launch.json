@@ -1,0 +1,49 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "GenPose++ ScoreNet 训练",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "runners/trainer.py",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            "args": [
+                "--data_path",
+                // "Omni6DPose_SOPE_PATH",
+                // "../data/Omni6DPose/SOPE",
+                "/home/dai/ai/data/Omni6DPose/SOPE",
+                "--log_dir",
+                "ScoreNet",
+                "--agent_type",
+                "score",
+                "--sampler_mode",
+                "ode",
+                "--sampling_steps",
+                "500",
+                "--eval_freq",
+                "1",
+                "--batch_size",
+                // "128",
+                "32",
+                "--n_epochs",
+                "50",
+                "--percentage_data_for_train",
+                "1.0",
+                "--percentage_data_for_test",
+                "1.0",
+                "--percentage_data_for_val",
+                "1.0",
+                "--seed",
+                "0",
+                "--is_train",
+                "--dino",
+                "pointwise",
+                "--num_worker",
+                "4"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}
