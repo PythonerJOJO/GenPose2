@@ -18,6 +18,8 @@ from networks.gf_algorithms.scorenet import PoseScoreNet, PoseDecoderNet
 from networks.gf_algorithms.energynet import PoseEnergyNet
 from networks.gf_algorithms.sde import init_sde
 from networks.scalenet import ScaleNet
+
+from networks.img_encoder.img_encoder import ImgEncoder
 from configs.config import get_config
 from utils.genpose_utils import encode_axes
 
@@ -45,13 +47,23 @@ class GFObjectPose(nn.Module):
 
         """ dino v2 """
         if cfg.dino != "none":
-            self.dino: nn.Module = torch.hub.load(
-                "facebookresearch/dinov2", GFObjectPose.dino_name
-            ).to(cfg.device)
+            # self.dino: nn.Module = torch.hub.load(
+            #     "facebookresearch/dinov2", GFObjectPose.dino_name
+            # ).to(cfg.device)
+            # self.dino.requires_grad_(False)
+            # self.dino_dim = GFObjectPose.dino_dim
+            # self.embedding_dim = GFObjectPose.embedding_dim
+            self.dino = torch.hub.load(
+                repo_or_dir="networks/dinov3",  # 本地克隆的DINOv3仓库路径
+                model="dinov3_vits16plus",  # 模型名称（对应ViT-S+）
+                source="local",  # 表明从本地仓库加载
+                weights="networks/dinov3/weights/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth",  # 本地权重文件路径
+            )
             self.dino.requires_grad_(False)
             self.dino_dim = GFObjectPose.dino_dim
             self.embedding_dim = GFObjectPose.embedding_dim
-
+            # self.img_encoder = ImgEncoder(self.dino_dim, 196, 16)
+            self.img_encoder = ImgEncoder(self.dino_dim, 256, 16)
         """ encode pts """
         if self.cfg.pts_encoder == "pointnet":
             assert cfg.dino != "pointwise"  # not supported yet
@@ -123,20 +135,84 @@ class GFObjectPose(nn.Module):
         pts = data["pts"]
         if self.cfg.dino == "pointwise":  # True
             roi_rgb = data["roi_rgb"]
-            feat_all = self.dino.get_intermediate_layers(roi_rgb)
-            feat = feat_all[0]  # ([32, 256, 384])
-            xs = data["roi_xs"] // 14
+            feat_all = self.dino.get_intermediate_layers(
+                roi_rgb,
+                n=[2, 6, 11],
+                reshape=False,
+                norm=True,  # 归一化特征
+                return_class_token=False,
+            )
+            # feats = feat_all[0]  # ([bs, 196, 384]),其中196=14*14，14=224/16
+            feat = self.img_encoder(feat_all)
+            # 256*256 时使用
+
+            xs = data["roi_xs"] // 14  # ([bs, 1024]) 变成 patch 级对应索引
             ys = data["roi_ys"] // 14
-            pos = xs * 16 + ys
+            pos = xs * 16 + ys  # ([bs, 1024])
+            # 224*224 时使用
+            # xs = data["roi_xs"] // 16  # ([bs, 1024]) 变成 patch 级对应索引
+            # ys = data["roi_ys"] // 16
+            # pos = xs * 14 + ys  # ([bs, 1024])
+            # ([bs, 1024, 384])
             pos = torch.unsqueeze(pos, -1).expand(-1, -1, self.dino_dim)
-            rgb_feat = torch.gather(feat, 1, pos)
-            rgb_feat.requires_grad_(False)
+            # print(f"\n=== gather 操作检查 ===")
+            # 1. 检查 feat 的形状和维度1大小（gather的维度是1）
+            # print(f"feat 形状: {feat.shape}")  # 预期类似 (bs, N, 384)，N是feat的总点数
+            feat_dim1 = feat.size(1)  # 获取feat在维度1上的大小
+            # print(f"feat 维度1（总点数）: {feat_dim1}")
+
+            # 2. 检查 pos 的核心信息（索引的关键属性）
+            # print(f"pos 形状: {pos.shape}")  # 预期 (bs, 1024, 1)（因为要选1024个点，最后一维为1广播）
+            # print(f"pos dtype: {pos.dtype}")  # 必须是整数型（torch.int32 / torch.int64）
+            # print(f"pos 索引范围: min={pos.min().item()}, max={pos.max().item()}")  # 关键！看是否越界
+
+            # 3. 检查 pos 形状是否与 feat 兼容
+            # 要求：pos的前N-1个维度与feat匹配，最后一维为1（或与feat最后一维相同）
+            if pos.shape[-1] != 1 and pos.shape[-1] != feat.shape[-1]:
+                # print(f"警告：pos最后一维形状 {pos.shape[-1]} 不兼容，需为1或 {feat.shape[-1]}")
+                # 若不兼容，强制调整最后一维为1（根据你的需求，这里假设是选点，最后一维应为1）
+                pos = pos.unsqueeze(-1)
+                # print(f"已将 pos 调整为 {pos.shape}")
+
+            # 4. 检查索引是否越界（最核心问题）
+            if pos.max().item() >= feat_dim1:
+                # print(f"错误：pos的最大索引 {pos.max().item()} ≥ feat维度1大小 {feat_dim1}，会越界！")
+                # 临时修正：截断越界索引（后续需根治pos的生成逻辑）
+                pos = pos.clamp(0, feat_dim1 - 1)
+                # print(f"已将 pos 截断到 [0, {feat_dim1-1}]")
+            if pos.min().item() < 0:
+                # print(f"错误：pos的最小索引 {pos.min().item()} < 0，会越界！")
+                pos = pos.clamp(0, feat_dim1 - 1)
+
+            # 5. 确保 pos 是整数型（CUDA gather 不支持浮点索引）
+            if not pos.dtype in [torch.int32, torch.int64]:
+                # print(f"警告：pos dtype {pos.dtype} 不是整数型，强制转为int64")
+                pos = pos.type(torch.int64)
+            try:
+                rgb_feat = torch.gather(feat, 1, pos)
+                # print(f"gather 成功！rgb_feat 最终形状: {rgb_feat.shape}")  # 预期 (bs,1024,384)
+            except RuntimeError as e:
+                print(f"gather 失败！详细错误: {str(e)}")
+                raise
+            # rgb_feat = torch.gather(feat, 1, pos)  # ([bs,1024,384])
+            # rgb_feat.requires_grad_(False)
         if self.cfg.pts_encoder == "pointnet":
             assert 0
             pts_feat = self.pts_encoder(pts.permute(0, 2, 1))  # -> (bs, 3, 1024)
         elif self.cfg.pts_encoder in ["pointnet2"]:
-            if self.cfg.dino == "pointwise":
-                pts_feat = self.pts_encoder(torch.concatenate([pts, rgb_feat], dim=-1))
+            if self.cfg.dino == "pointwise":  # True
+                # print(pts.device)
+                # print(rgb_feat.device)
+                # has_nan_pts = torch.isnan(pts).any().item()
+                # has_inf_pts = torch.isinf(pts).any().item()
+                # has_nan_rgb = torch.isnan(rgb_feat).any().item()
+                # has_inf_rgb = torch.isinf(rgb_feat).any().item()
+
+                # # 打印检查结果（关键！看是否有异常值）
+                # print(f"pts - NaN: {has_nan_pts}, Inf: {has_inf_pts}")
+                # print(f"rgb_feat - NaN: {has_nan_rgb}, Inf: {has_inf_rgb}")
+                concate_data = torch.concatenate([pts, rgb_feat], dim=-1)
+                pts_feat = self.pts_encoder(concate_data)
             else:
                 pts_feat = self.pts_encoder(pts)
         elif self.cfg.pts_encoder == "pointnet_and_pointnet2":
@@ -237,7 +313,7 @@ class GFObjectPose(nn.Module):
         elif mode == "pts_feature":
             pts_feature = self.extract_pts_feature(data)
             return pts_feature
-        elif mode == "rgb_feature":
+        elif mode == "rgb_feature":  # 不会用到全局 dinov2
             if self.cfg.dino != "global":
                 return None
             rgb: torch.Tensor = data["roi_rgb"]

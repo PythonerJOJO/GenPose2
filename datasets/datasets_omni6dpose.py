@@ -244,7 +244,7 @@ class Omni6DPoseDataSet(data.Dataset):
             ],
             dtype=np.float32,
         )  # [fx, fy, cx, cy] 相机内参矩阵
-
+        mat_K *= img_resize_scale
         mat_K[2, 2] = 1
 
         ## visualize pointcloud
@@ -277,13 +277,15 @@ class Omni6DPoseDataSet(data.Dataset):
         bbox_xyxy = np.array([cmin, rmin, cmax, rmax])  # 方框的左上和右下两个角
         bbox_center, scale = aug_bbox_DZI(
             self.dynamic_zoom_in_params, bbox_xyxy, im_H, im_W
-        )  #
+        )
         roi_coord_2d = crop_resize_by_warp_affine(
             coord_2d, bbox_center, scale, self.img_size, interpolation=cv2.INTER_NEAREST
         ).transpose(2, 0, 1)
         roi_rgb_ = crop_resize_by_warp_affine(
             rgb, bbox_center, scale, self.img_size, interpolation=cv2.INTER_LINEAR
-        )
+        )  # 未归一化的裁剪区域
+        # 测试 roi_rgb
+        # roi_rgb = Omni6DPoseDataSet.rgb_transform(roi_rgb_).transpose(1, 2, 0)
         roi_rgb = Omni6DPoseDataSet.rgb_transform(roi_rgb_)
         mask_target = mask.copy().astype(np.float32)
         mask_target[mask != obj.mask_id] = 0.0
@@ -298,8 +300,8 @@ class Omni6DPoseDataSet(data.Dataset):
         roi_mask = np.expand_dims(roi_mask, axis=0)
         roi_depth = crop_resize_by_warp_affine(
             depth, bbox_center, scale, self.img_size, interpolation=cv2.INTER_NEAREST
-        )
-        roi_depth = np.expand_dims(roi_depth, axis=0)
+        )  # 未归一化
+        roi_depth = np.expand_dims(roi_depth, axis=0)  # 通道优先，1通道拓展到0位置
         depth_valid = roi_depth > 0
         if np.sum(depth_valid) <= 1.0:
             return self.__getitem__((index + 1) % self.__len__())
@@ -319,14 +321,15 @@ class Omni6DPoseDataSet(data.Dataset):
         )
 
         valid = (np.squeeze(roi_depth, axis=0) > 0) * roi_mask_def > 0
-        xs, ys = np.argwhere(valid).transpose(1, 0)
+        xs, ys = np.argwhere(valid).transpose(1, 0)  # 行索引,列索引->列，行
         valid = valid.reshape(-1)
+        # 点云数量恰好为有效深度点(xs或ys)的数量 , 未归一化
         pcl_in = self.depth_to_pcl(roi_depth, mat_K, roi_coord_2d, valid)
         # np.savetxt('pts_def.txt', pcl_in)
         if len(pcl_in) < 50:
             return self.__getitem__((index + 1) % self.__len__())
+        # 采样固定数量的点云
         ids, pcl_in = self.sample_points(pcl_in, self.n_pts)
-        xs, ys = xs[ids], ys[ids]
 
         # sym #
         sym_info = self.obj_meta.instance_dict[inst_name].tag.symmetry
@@ -452,8 +455,10 @@ class Omni6DPoseDataSet(data.Dataset):
         if total_pts_num < n_pts:
             pcl = np.concatenate(
                 [
+                    # 重复复制 n 个完整原始点云
+                    # 将原始点云pcl沿行方向复制(n_pts // total_pts_num)次
                     np.tile(pcl, (n_pts // total_pts_num, 1)),
-                    pcl[: n_pts % total_pts_num],
+                    pcl[: n_pts % total_pts_num],  # 不足一个完整的位置补零
                 ],
                 axis=0,
             )
@@ -465,7 +470,9 @@ class Omni6DPoseDataSet(data.Dataset):
                 axis=0,
             )
         else:
-            ids = np.random.permutation(total_pts_num)[:n_pts]
+            # 从[0,total_pts_num)中随机无重复地抽取 total_pts_num 个索引
+            ids = np.random.permutation(total_pts_num)
+            ids = ids[:n_pts]  # 保留前面抽取的 n_pts个作为采样得到的点索引
             pcl = pcl[ids]
         return ids, pcl
 
@@ -473,12 +480,14 @@ class Omni6DPoseDataSet(data.Dataset):
     def depth_to_pcl(depth, K, xymap, valid):
         K = K.reshape(-1)
         cx, cy, fx, fy = K[2], K[5], K[0], K[4]
-        depth = depth.reshape(-1).astype(np.float32)[valid]
-        x_map = xymap[0].reshape(-1)[valid]
+        depth = depth.reshape(-1).astype(np.float32)  # 展平为一维数组
+        depth = depth[valid]  # 把 true 的点保留
+        # depth = depth.reshape(-1).astype(np.float32)[valid]
+        x_map = xymap[0].reshape(-1)[valid]  # 索引也仅保留有效点
         y_map = xymap[1].reshape(-1)[valid]
         real_x = (x_map - cx) * depth / fx
         real_y = (y_map - cy) * depth / fy
-        pcl = np.stack((real_x, real_y, depth), axis=-1)
+        pcl = np.stack((real_x, real_y, depth), axis=-1)  # (有效点云数,3)
         return pcl.astype(np.float32)
 
     @staticmethod
@@ -697,17 +706,21 @@ def process_batch(batch_sample, device, pose_mode="quat_wxyz", PTS_AUG_PARAMS=No
         gt_t_da = batch_sample["translation"].to(device)
 
     processed_sample = {}
-    processed_sample["pts"] = PC_da  # [bs, 1024, 3]
-    processed_sample["pts_color"] = PC_da  # [bs, 1024, 3]
+    processed_sample["pts"] = PC_da  # [bs, 1024, 3],未归一化
+    # 查看全局最大值和最小值，测试
+    # global_min = PC_da.min().item()
+    # global_max = PC_da.max().item()
+    processed_sample["pts_color"] = PC_da  # [bs, 1024, 3],没有颜色数据
     processed_sample["sym_info"] = batch_sample["sym_info"]  # [bs, 4]
     rgb_view = batch_sample["roi_rgb"][0]  # 测试数据
     processed_sample["roi_rgb"] = batch_sample["roi_rgb"].to(
         device
-    )  # [bs, 3, imgsize, imgsize]
+    )  # [bs, 3, 224, 224]，已归一化，正方形
     assert (
         processed_sample["roi_rgb"].shape[-1] == processed_sample["roi_rgb"].shape[-2]
     )
-    assert processed_sample["roi_rgb"].shape[-1] % 14 == 0
+    assert processed_sample["roi_rgb"].shape[-1] % 16 == 0
+    # assert processed_sample["roi_rgb"].shape[-1] % 14 == 0
     processed_sample["roi_xs"] = batch_sample["roi_xs"].to(device)  # [bs, 1024]
     processed_sample["roi_ys"] = batch_sample["roi_ys"].to(device)  # [bs, 1024]
     processed_sample["roi_center_dir"] = batch_sample["roi_center_dir"].to(

@@ -37,7 +37,7 @@ from cutoop.eval_utils import *
 
 
 def train_score(
-    cfg, train_loader, val_loader, test_loader, score_agent, teacher_model=None
+    cfg, train_loader, val_loader, test_loader, score_agent: PoseNet, teacher_model=None
 ):
     """Train score network or energe network without ranking
     Args:
@@ -53,6 +53,7 @@ def train_score(
         torch.cuda.empty_cache()
         # For each batch in the dataloader
         pbar = tqdm(train_loader)
+        # pbar = tqdm(val_loader)
         for i, batch_sample in enumerate(pbar):
 
             """warm up"""
@@ -84,8 +85,10 @@ def train_score(
 
         """ start eval """
         if score_agent.clock.epoch % cfg.eval_freq == 0:
-            data_loaders = [train_loader, val_loader, test_loader]
-            data_modes = ["train", "val", "test"]
+            # data_loaders = [train_loader, val_loader, test_loader]
+            data_loaders = [train_loader, val_loader]
+            # data_modes = ["train", "val", "test"]
+            data_modes = ["train", "val"]
             for i in range(len(data_modes)):
                 test_batch = next(iter(data_loaders[i]))
                 data_mode = data_modes[i]
@@ -366,5 +369,149 @@ def main():
         train_scale(cfg, train_loader, val_loader, test_loader, tr_agent, score_agent)
 
 
+def main2():
+    # load config
+    cfg = get_config()
+
+    def cfg_add(cfg):
+        # cfg.data_root = "/mnt/e/ai/data/xyzibd"
+        cfg.data_root = "/root/autodl-tmp/xyzibd"
+        # cfg.target_obj_id = -1
+        cfg.target_obj_id = 1
+        # cfg.sample_ratio = 0.8
+        cfg.sample_ratio = 1
+        cfg.verbose = True
+
+        return cfg
+
+    cfg = cfg_add(cfg)
+    """ Init data loader """
+    if not (cfg.eval or cfg.pred):
+        from datasets_my.dataset_port import DatasetPort
+
+        data_loaders = DatasetPort.get_data_loaders_from_cfg(
+            cfg,
+            dataset_type="xyzibd",
+            data_type=["train", "val"],  # TODO:暂时不要训练集
+            # data_type=["val"],
+        )
+        # data_loaders = get_data_loaders_from_cfg(
+        #     cfg=cfg, data_type=["train", "val", "test"]
+        # )
+        # train_loader = None  # TODO:暂时不要训练集
+        if "train_loader" in data_loaders:
+            train_loader = data_loaders["train_loader"]
+            print("train_set: ", len(train_loader))
+        if "val_loader" in data_loaders:
+            val_loader = data_loaders["val_loader"]
+            test_loader = data_loaders["val_loader"]
+            # test_loader = data_loaders["test_loader"]
+            print("val_set: ", len(val_loader))
+        # print("test_set: ", len(test_loader))
+    else:
+        data_loaders = get_data_loaders_from_cfg(cfg=cfg, data_type=["test"])
+        test_loader = data_loaders["test_loader"]
+        print("test_set: ", len(test_loader))
+
+    """ Init trianing agent and load checkpoints"""
+    if cfg.agent_type == "score":
+        # cfg.agent_type = "score"
+        score_agent = PoseNet(cfg)
+        tr_agent = score_agent
+        # score_agent.load_ckpt(
+        #     model_dir=cfg.pretrained_score_model_path,
+        #     model_path=True,
+        #     load_model_only=True,
+        # )
+
+    elif cfg.agent_type == "energy":
+        cfg.agent_type = "energy"
+        energy_agent = PoseNet(cfg)
+        if cfg.pretrained_score_model_path is not None:
+            energy_agent.load_ckpt(
+                model_dir=cfg.pretrained_score_model_path,
+                model_path=True,
+                load_model_only=True,
+            )
+            energy_agent.net.pose_score_net.output_zero_initial()
+        if cfg.distillation is True:
+            cfg.agent_type = "score"
+            score_agent = PoseNet(cfg)
+            score_agent.load_ckpt(
+                model_dir=cfg.pretrained_score_model_path,
+                model_path=True,
+                load_model_only=True,
+            )
+            cfg.agent_type = "energy"
+        tr_agent = energy_agent
+
+    elif cfg.agent_type == "energy_with_ranking":
+        cfg.agent_type = "score"
+        score_agent = PoseNet(cfg)
+        cfg.agent_type = "energy"
+        energy_agent = PoseNet(cfg)
+        score_agent.load_ckpt(
+            model_dir=cfg.pretrained_score_model_path,
+            model_path=True,
+            load_model_only=True,
+        )
+        tr_agent = energy_agent
+
+    elif cfg.agent_type == "scale":
+        cfg.agent_type = "score"
+        score_agent = PoseNet(cfg)
+        score_agent.load_ckpt(
+            model_dir=cfg.pretrained_score_model_path,
+            model_path=True,
+            load_model_only=True,
+        )
+        cfg.agent_type = "scale"
+        scale_agent = PoseNet(cfg)
+        tr_agent = scale_agent
+    else:
+        raise NotImplementedError
+
+    """ Load checkpoints """
+    if cfg.use_pretrain or cfg.eval or cfg.pred:
+        tr_agent.load_ckpt(
+            model_dir=(
+                cfg.pretrained_score_model_path
+                if cfg.agent_type == "score"
+                else (
+                    cfg.pretrained_energy_model_path
+                    if cfg.agent_type in ["energy", "energy_with_ranking"]
+                    else cfg.pretrained_scale_model_path
+                )
+            ),
+            model_path=True,
+            load_model_only=False,
+        )
+
+    """ Start training loop """
+    if cfg.agent_type == "score":
+        train_score(cfg, train_loader, val_loader, test_loader, tr_agent)
+    elif cfg.agent_type == "energy":
+        if cfg.distillation:
+            train_energy(
+                cfg,
+                train_loader,
+                val_loader,
+                test_loader,
+                tr_agent,
+                score_agent,
+                False,
+                True,
+            )
+        else:
+            train_energy(cfg, train_loader, val_loader, test_loader, tr_agent)
+    elif cfg.agent_type == "energy_with_ranking":
+        train_energy(
+            cfg, train_loader, val_loader, test_loader, tr_agent, score_agent, True
+        )
+    else:
+        train_scale(cfg, train_loader, val_loader, test_loader, tr_agent, score_agent)
+
+
 if __name__ == "__main__":
-    main()
+    # main()
+    main2()

@@ -215,6 +215,7 @@ class PoseScoreNet(nn.Module):
     def forward(self, data):
         """
         Args:
+            最终回归头
             data, dict {
                 'pts_feat': [bs, c]
                 'rgb_feat': [bs, dino_dim] (optional)

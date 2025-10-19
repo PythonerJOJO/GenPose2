@@ -90,7 +90,12 @@ def aug_bbox_eval(bbox_xyxy, im_H, im_W):
 
 
 def crop_resize_by_warp_affine(
-    img, center, scale, output_size, rot=0, interpolation=cv2.INTER_LINEAR
+    img,
+    center,
+    scale,
+    output_size,
+    rot=0,
+    interpolation=cv2.INTER_LINEAR,  # 插值方法（双线性插值）
 ):
     """
     output_size: int or (w, h)
@@ -100,6 +105,7 @@ def crop_resize_by_warp_affine(
         scale = (scale, scale)
     if isinstance(output_size, int):
         output_size = (output_size, output_size)
+    # 2x3的仿射变换矩阵（平移、旋转等参数）
     trans = get_affine_transform(center, scale, rot, output_size)
 
     dst_img = cv2.warpAffine(
@@ -113,6 +119,7 @@ def get_affine_transform(
     center, scale, rot, output_size, shift=np.array([0, 0], dtype=np.float32), inv=False
 ):
     """
+    生成一个仿射变换矩阵，用于对图像进行旋转、缩放、平移等变换
     adapted from CenterNet: https://github.com/xingyizhou/CenterNet/blob/master/src/lib/utils/image.py
     center: ndarray: (cx, cy)
     scale: (w, h)

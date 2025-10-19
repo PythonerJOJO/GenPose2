@@ -342,8 +342,8 @@ class PoseNet(nn.Module):
         self.net.train()
         self.is_testing = False
 
-        data["rgb_feat"] = self.net(data, mode="rgb_feature")  # None
-        data["pts_feat"] = self.net(data, mode="pts_feature")  # 在这里融合dino
+        # data["rgb_feat"] = self.net(data, mode="rgb_feature")  # None
+        data["pts_feat"] = self.net(data, mode="pts_feature")  # 这里融合dino，(bs,1024)
 
         with torch.no_grad():  # 没有教师模型
             if teacher_model is not None:
@@ -404,11 +404,11 @@ class PoseNet(nn.Module):
         self.ema.copy_to(self.net.parameters())
         with torch.no_grad():
             data["pts_feat"] = self.net(data, mode="pts_feature")
-            data["rgb_feat"] = self.net(data, mode="rgb_feature")
+            # data["rgb_feat"] = self.net(data, mode="rgb_feature")
             self.pts_feature = True
             in_process_sample_list = []
             res_list = []
-            cla_list = []
+            # cla_list = []
             sampler_mode_list = self.cfg.sampler_mode
             for sampler in sampler_mode_list:
                 in_process_sample, res = self.net(data, mode=f"{sampler}_sample")
@@ -493,7 +493,7 @@ class PoseNet(nn.Module):
         repeat_num,
         save_path="./visualization_results",
         return_average_res=False,
-        init_x=None,
+        init_x: torch.Tensor = None,
         T0=None,
         return_process=False,
     ):
@@ -503,7 +503,7 @@ class PoseNet(nn.Module):
 
         with torch.no_grad():
             data["pts_feat"] = self.net(data, mode="pts_feature")
-            data["rgb_feat"] = self.net(data, mode="rgb_feature")
+            data["rgb_feat"] = self.net(data, mode="rgb_feature")  # None
             bs = data["pts"].shape[0]
             self.pts_feature = True
 
@@ -525,7 +525,6 @@ class PoseNet(nn.Module):
                 .repeat(1, repeat_num, 1)
                 .view(bs * repeat_num, -1)
             )
-
             """ Inference """
             in_process_sample, res = self.net(
                 repeated_data,
@@ -641,7 +640,7 @@ class PoseNet(nn.Module):
                     data["rgb_feat"]
                     if extract_feature == False
                     else self.net(data, mode="rgb_feature")
-                )
+                )  # None
         self.pts_feature = True
 
         """ repeat pts feature """
