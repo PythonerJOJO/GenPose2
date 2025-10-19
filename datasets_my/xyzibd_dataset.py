@@ -149,7 +149,7 @@ class XyzibdDataset(data.Dataset):
         # 加载标签
         rotation = data["R"]
         translation = data["t"].flatten() / 1000
-        # normalized_trans = (translation - self.trans_mean) / self.trans_std
+        normalized_trans = (translation - self.trans_mean) / self.trans_std
         quaternion, _ = PoseUtils.convert_pose_2_quaternion(rotation, translation)
         quaternion = quaternion.numpy()[0]
 
@@ -326,7 +326,9 @@ class XyzibdDataset(data.Dataset):
             translation, dtype=torch.float32
         ).contiguous()
         label_dict["translation"] = torch.as_tensor(
-            translation, dtype=torch.float32
+            # translation, dtype=torch.float32
+            normalized_trans,
+            dtype=torch.float32,
         ).contiguous()
 
         label_dict["quaternion"] = torch.as_tensor(
